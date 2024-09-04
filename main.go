@@ -12,42 +12,6 @@ import (
 	"strings"
 )
 
-type ProgramArguments struct{
-    program string
-    port string
-    target string
-}
-func parseArgs() ProgramArguments{
-    var programArguments ProgramArguments
-    programArguments.program = os.Args[0]
-    arguments := os.Args[1:]
-
-    for i := 0; i < len(arguments); i++ {
-        arg := arguments[i]
-        if arg == "-p" || arg == "--port" {
-            if i+1 < len(arguments) {
-                port := arguments[i+1]
-                i = i+1
-                programArguments.port = port
-            }
-        }
-        if arg == "-t" || arg == "--target" {
-            if i+1 < len(arguments) {
-                target := arguments[i+1]
-                i = i+1
-                programArguments.target = target
-            }
-        }
-    }
-    if programArguments.port == ""{
-        panic("Missing port argument")
-    }
-    if programArguments.target == "" {
-        panic("Missing target argument")
-    }
-    return programArguments
-}
-
 func main() {
     config := read_config("config.yasgp")
     for pattern, g := range config.groups {
