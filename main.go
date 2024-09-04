@@ -95,8 +95,8 @@ type Config struct {
 }
 func parse_config(config_file_data string) Config {
     config_file_lines := strings.Split(config_file_data, "\n")
-    for _, l := range config_file_lines { // windows support
-        l = strings.TrimSuffix(l, "\r") 
+    for i, l := range config_file_lines { // windows support
+        config_file_lines[i] = strings.TrimSuffix(l, "\r") 
     }
 
     var port uint16
