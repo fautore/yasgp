@@ -53,48 +53,50 @@ func main() {
     for pattern, g := range config.groups {
         if pattern == "" { pattern = "/" }
         http.HandleFunc(pattern, func(w http.ResponseWriter, req *http.Request) {
-            for _, rule := range g {
-                hostname := req.URL.Hostname()
-                if  hostname == "" { hostname = strings.Split(req.Host, ":")[0] }
-                if (req.URL.Path == rule.trigger.Path) || (req.URL.Path == "/" && rule.trigger.Path == "") { 
-                    if hostname == rule.trigger.Host {
-                        url := req.URL
-                        url.Scheme = "http"
-                        url.Host = rule.target.Host
-                        fmt.Println(url.String())
-                        newReq, err := http.NewRequest(req.Method, url.String(), req.Body)
-                        if err != nil {
-                            http.Error(w, err.Error(), http.StatusInternalServerError)
-                            return
-                        }
-                        // Copy the headers from the original request
-                        for key, val := range req.Header {
-                            newReq.Header[key] = val
-                        }
+            log.Printf("%v", req.URL.String())
 
-                        newReq.Header.Set("x-forwarded-host", req.Host)
-                        // Send the request via a http.Client
-                        client := &http.Client{
-                            CheckRedirect: func(req *http.Request, via []*http.Request) error {
-                                return http.ErrUseLastResponse
-                            },
-                        }
-                        res, err := client.Do(newReq)
-                        if err != nil {
-                            http.Error(w, err.Error(), http.StatusBadGateway)
-                            return
-                        }
-                        // Copy the response headers and body back to the original writer
-                        for key, val := range res.Header {
-                            w.Header()[key] = val
-                        }
-                        w.WriteHeader(res.StatusCode)
-                        io.Copy(w, res.Body)
+            hostname := req.URL.Hostname()
+            for _, rule := range g {
+                if  hostname == "" { hostname = strings.Split(req.Host, ":")[0] }
+                if hostname == rule.trigger.Host {
+                    target_url := req.URL
+                    target_url.Scheme = "http"
+                    target_url.Host = rule.target.Host
+                    joined_path, err := url.JoinPath(rule.target.Path, req.URL.Path)
+                    if err != nil { log.Fatalln(err) }
+                    target_url.Path = joined_path 
+                    newReq, err := http.NewRequest(req.Method, target_url.String(), req.Body)
+                    if err != nil {
+                        http.Error(w, err.Error(), http.StatusInternalServerError)
                         return
                     }
-                    http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+                    // Copy the headers from the original request
+                    for key, val := range req.Header {
+                        newReq.Header[key] = val
+                    }
+
+                    newReq.Header.Set("x-forwarded-host", req.Host)
+                    // Send the request via a http.Client
+                    client := &http.Client{
+                        CheckRedirect: func(req *http.Request, via []*http.Request) error {
+                            return http.ErrUseLastResponse
+                        },
+                    }
+                    res, err := client.Do(newReq)
+                    if err != nil {
+                        http.Error(w, err.Error(), http.StatusBadGateway)
+                        return
+                    }
+                    // Copy the response headers and body back to the original writer
+                    for key, val := range res.Header {
+                        w.Header()[key] = val
+                    }
+                    w.WriteHeader(res.StatusCode)
+                    io.Copy(w, res.Body)
                     return
                 }
+                http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+                return
             }
             http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
             return
