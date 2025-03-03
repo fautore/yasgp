@@ -8,136 +8,194 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strconv"
+	"os/signal"
 	"strings"
+	"syscall"
 )
 
-func main() {
-    config := read_config("config.yasgp")
-    for pattern, g := range config.groups {
-        if pattern == "" { pattern = "/" }
-        http.HandleFunc(pattern, func(w http.ResponseWriter, req *http.Request) {
-            log.Printf("%v", req.URL.String())
-
-            hostname := req.URL.Hostname()
-            for _, rule := range g {
-                if  hostname == "" { hostname = strings.Split(req.Host, ":")[0] }
-                if hostname == rule.trigger.Host {
-                    target_url := req.URL
-                    target_url.Scheme = "http"
-                    target_url.Host = rule.target.Host
-                    joined_path, err := url.JoinPath(rule.target.Path, req.URL.Path)
-                    if err != nil { log.Fatalln(err) }
-                    target_url.Path = joined_path 
-                    newReq, err := http.NewRequest(req.Method, target_url.String(), req.Body)
-                    if err != nil {
-                        http.Error(w, err.Error(), http.StatusInternalServerError)
-                        return
-                    }
-                    // Copy the headers from the original request
-                    for key, val := range req.Header {
-                        newReq.Header[key] = val
-                    }
-
-                    newReq.Header.Set("x-forwarded-host", req.Host)
-                    // Send the request via a http.Client
-                    client := &http.Client{
-                        CheckRedirect: func(req *http.Request, via []*http.Request) error {
-                            return http.ErrUseLastResponse
-                        },
-                    }
-                    res, err := client.Do(newReq)
-                    if err != nil {
-                        http.Error(w, err.Error(), http.StatusBadGateway)
-                        return
-                    }
-                    // Copy the response headers and body back to the original writer
-                    for key, val := range res.Header {
-                        w.Header()[key] = val
-                    }
-                    w.WriteHeader(res.StatusCode)
-                    io.Copy(w, res.Body)
-                    return
-                }
-                http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
-                return
-            }
-            http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
-            return
-        })
-    }
-    if err := http.ListenAndServe(fmt.Sprintf(":%v", config.port), nil); err != nil {
-        log.Fatalf("Could not start server: %s\n", err.Error())
-    }
-}
+const VERSION = "0.0.1"
 
 type Rule struct {
-    trigger url.URL
-    target url.URL
+	trigger url.URL
+	target  url.URL
+}
+type Address string
+
+type Config struct {
+	rules  []Rule
+	groups GroupMap
+}
+type GroupMap struct {
+	groups map[Address]*Group
+}
+
+func NewGroupMap() GroupMap {
+	return GroupMap{
+		groups: make(map[Address]*Group),
+	}
+}
+
+func (g *GroupMap) has(address Address) bool {
+	_, ok := g.groups[address]
+	return ok
+}
+func (g *GroupMap) get(address Address) (*Group, error) {
+	if !g.has(address) {
+		return nil, fmt.Errorf("%v is not found in group", address)
+	}
+	group := g.groups[address]
+	return group, nil
+}
+func (gm *GroupMap) set(address Address, group Group) {
+	gm.groups[address] = &group
+}
+
+type Group struct {
+	address Address
+	rules   []Rule
+}
+
+func startProxy(group Group) {
+	mux := http.NewServeMux()
+	for _, rule := range group.rules {
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			r.URL.Host = ""
+			target_url, err := url.Parse(rule.target.String() + r.URL.String())
+			if err != nil {
+				log.Printf("%v", err.Error())
+				return
+			}
+
+			log.Printf("Received request on binding %v, redirecting to %v ...\n", r.URL, target_url)
+
+			header := make(http.Header)
+			for hk, h := range r.Header {
+				for _, hv := range h {
+					header.Add(hk, hv)
+				}
+			}
+			// log.Printf("richiesta:\n\n\n%v\n\n\n", header)
+
+			res, err := http.DefaultClient.Do(&http.Request{
+				Method: r.Method,
+				URL:    target_url,
+				Header: header,
+			})
+			if err != nil {
+				log.Printf("%v", err.Error())
+			}
+			defer res.Body.Close()
+
+			for hk, h := range res.Header {
+				for _, hv := range h {
+					w.Header().Add(hk, hv)
+				}
+			}
+
+			_, err = io.Copy(w, res.Body)
+			if err != nil {
+				log.Printf("%v", err.Error())
+			}
+			w.WriteHeader(res.StatusCode)
+		})
+	}
+
+	server := &http.Server{
+		Addr:    string(group.address),
+		Handler: mux,
+	}
+
+	log.Printf("Listening on address %v", group.address)
+	err := server.ListenAndServe()
+	if err != nil {
+		log.Fatalf("%v\n", err.Error())
+	}
+}
+
+func main() {
+	fmt.Printf("YASGP - Yet Another Silly Go Proxy\nv.%v\n\n\n", VERSION)
+
+	config, err := read_config_file("config.yasgp")
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+
+	for _, group := range config.groups.groups {
+		for _, r := range group.rules {
+			log.Printf("%v -> %v\n", r.trigger.Host, r.target.Host)
+		}
+		go startProxy(*group)
+	}
+	done := make(chan os.Signal, 1)
+	signal.Notify(done, syscall.SIGINT, syscall.SIGTERM)
+	<-done
+	log.Printf("Received stop signal, closing...")
 }
 
 func parse_rule(rule_string string) (*Rule, error) {
-    rule_components := strings.Split(rule_string, " to ")
-    if len(rule_components) < 2 { return nil, fmt.Errorf("rule parse error") }
-    trigger, err := url.Parse(rule_components[0])
-    if err != nil { return nil, err }
-    target, err := url.Parse(rule_components[1])
-    if err != nil { return nil, err }
-    return &Rule{
-        trigger: *trigger,
-        target: *target,
-    }, nil
-}
-type Config struct {
-    port uint16
-    rules []Rule
-    groups map[string][]*Rule
-}
-func parse_config(config_file_data string) Config {
-    config_file_lines := strings.Split(config_file_data, "\n")
-    for i, l := range config_file_lines { // windows support
-        config_file_lines[i] = strings.TrimSuffix(l, "\r") 
-    }
-
-    var port uint16
-    port = 80
-    rules := make([]Rule, 0)
-    groups := make(map[string][]*Rule, 0)
-
-    for i, r := range config_file_lines {
-        if strings.Contains(r, "port") {
-            p, err := strconv.ParseInt(strings.Split(r, " ")[1], 10, 32)
-            if err != nil {
-                panic(err)
-            }
-            port = uint16(p) 
-        } else if r != "" {
-            rule, err := parse_rule(r)
-            if err != nil {
-                log.Fatalf("%s at line %v\n", err.Error(), i)
-            }
-            rules = append(rules, *rule) 
-            if g, ok := groups[rule.trigger.Path]; ok {
-                groups[rule.trigger.Path] = append(g, rule)
-            } else if groups[rule.trigger.Path] == nil {
-                groups[rule.trigger.Path] = []*Rule{ rule } 
-            }
-        }
-    }
-    return Config{
-        port: port,
-        rules: rules,
-        groups: groups,
-    }
+	rule_components := strings.Split(rule_string, " to ")
+	if len(rule_components) < 2 {
+		return nil, fmt.Errorf("rule parse error")
+	}
+	trigger, err := url.Parse(rule_components[0])
+	if err != nil {
+		return nil, err
+	}
+	target, err := url.Parse(rule_components[1])
+	if err != nil {
+		return nil, err
+	}
+	return &Rule{
+		trigger: *trigger,
+		target:  *target,
+	}, nil
 }
 
-func read_config(filename string) Config {
-    if !fs.ValidPath(filename) {
-    }
-    file_data, err := os.ReadFile(filename)
-    if err != nil {
-        os.Stderr.WriteString(err.Error())
-    }
-    file_data_str := string(file_data)
-    return parse_config(file_data_str) 
+func read_config_file(filename string) (*Config, error) {
+	if !fs.ValidPath(filename) {
+		return nil, fmt.Errorf("file name %v is not a valid path", filename)
+	}
+	file_data, err := os.ReadFile(filename)
+	if err != nil {
+		os.Stderr.WriteString(err.Error())
+	}
+	file_data_str := string(file_data)
+	config_file_lines := strings.Split(file_data_str, "\n")
+	for i, l := range config_file_lines { // windows support
+		config_file_lines[i] = strings.TrimSuffix(l, "\r")
+	}
+
+	rules := make([]Rule, 0)
+
+	for i, r := range config_file_lines {
+		if r != "" {
+			rule, err := parse_rule(r)
+			if err != nil {
+				log.Fatalf("%s at line %v\n", err.Error(), i)
+			}
+			rules = append(rules, *rule)
+		}
+	}
+
+	config := Config{
+		rules:  rules,
+		groups: NewGroupMap(),
+	}
+
+	for _, r := range config.rules {
+		address := Address(r.trigger.Host)
+		// TODO debug log.Printf("%v\n", address)
+		if !config.groups.has(address) {
+			config.groups.set(address, Group{
+				address: address,
+				rules:   make([]Rule, 0),
+			})
+		}
+		group, err := config.groups.get(address)
+		if err != nil {
+			return nil, fmt.Errorf("")
+		}
+		group.rules = append(group.rules, r)
+	}
+	return &config, nil
 }
