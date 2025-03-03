@@ -1,1 +1,4 @@
+# ignore air tmp directory
+tmp
+# ignore all executables
 **/*.exe
