@@ -132,7 +132,15 @@ func main() {
 	log.Printf("Received stop signal, closing...")
 }
 
-func parse_rule(rule_string string) (*Rule, error) {
+func parse_line(rule_string string) (*Rule, error) {
+	// ignore empty lines
+	if rule_string == "" {
+		return nil, nil
+	}
+	// ignore comments
+	if rule_string[0] == '#' {
+		return nil, nil
+	}
 	rule_components := strings.Split(rule_string, " to ")
 	if len(rule_components) < 2 {
 		return nil, fmt.Errorf("rule parse error")
@@ -160,8 +168,9 @@ func read_config_file(filename string) (*Config, error) {
 		os.Stderr.WriteString(err.Error())
 	}
 	file_data_str := string(file_data)
+	// windows support
 	config_file_lines := strings.Split(file_data_str, "\n")
-	for i, l := range config_file_lines { // windows support
+	for i, l := range config_file_lines {
 		config_file_lines[i] = strings.TrimSuffix(l, "\r")
 	}
 
@@ -169,11 +178,13 @@ func read_config_file(filename string) (*Config, error) {
 
 	for i, r := range config_file_lines {
 		if r != "" {
-			rule, err := parse_rule(r)
+			rule, err := parse_line(r)
 			if err != nil {
 				log.Fatalf("%s at line %v\n", err.Error(), i)
 			}
-			rules = append(rules, *rule)
+			if rule != nil {
+				rules = append(rules, *rule)
+			}
 		}
 	}
 
